@@ -21,13 +21,18 @@ endif()
 
 include(FetchContent)
 
-set(ORT_VERSION "1.24.3")
-set(ORT_DOWNLOAD_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}")
+set(ORT_VERSION "1.31.1")
+# aarch64 (Jetson) CUDA: no official GPU tarball exists, so the CUDA-enabled libraries
+# are taken from the PyPI onnxruntime-gpu wheel and combined with the headers of the
+# CPU tarball. The wheel URL must match ORT_VERSION (PyPI only has aarch64 GPU wheels
+# since 1.29.0).
+set(ORT_AARCH64_WHEEL_URL "https://files.pythonhosted.org/packages/7b/dc/0e7674377dd204170a4e077c719ee735a2eea6b7f102aa66873af74cced4/onnxruntime_gpu-1.31.1-cp312-cp312-manylinux_2_34_aarch64.whl")
 
 # Detect system and architecture for appropriate asset selection (ROS 2 distro platforms)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
     set(ORT_ASSET_NAME "onnxruntime-linux-aarch64-${ORT_VERSION}.tgz")
+    set(ORT_USE_AARCH64_WHEEL TRUE)
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set(ORT_ASSET_NAME "onnxruntime-linux-x64-gpu_cuda13-${ORT_VERSION}.tgz")
   else()
@@ -41,6 +46,7 @@ else()
   message(FATAL_ERROR "Unsupported operating system: ${CMAKE_SYSTEM_NAME}")
 endif()
 
+set(ORT_DOWNLOAD_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}")
 set(ORT_ASSET_URL "${ORT_DOWNLOAD_URL}/${ORT_ASSET_NAME}")
 
 message(STATUS "Downloading ONNX Runtime prebuilt binary: ${ORT_ASSET_NAME}")
@@ -57,11 +63,29 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(onnxruntime_binary)
 
+if(ORT_USE_AARCH64_WHEEL)
+  FetchContent_Declare(
+    onnxruntime_wheel
+    URL "${ORT_AARCH64_WHEEL_URL}"
+    ${_onnxruntime_timestamp}
+  )
+  FetchContent_MakeAvailable(onnxruntime_wheel)
+endif()
+
 # Copy to a stable, version-named directory so cmake_install.cmake does not
 # reference FetchContent _deps/ path (e.g. for Debian packaging).
 set(ONNXRUNTIME_ROOT_DIR "${CMAKE_BINARY_DIR}/onnxruntime_prebuilt_${ORT_VERSION}")
 if(NOT EXISTS "${ONNXRUNTIME_ROOT_DIR}")
-  file(COPY "${onnxruntime_binary_SOURCE_DIR}/" DESTINATION "${ONNXRUNTIME_ROOT_DIR}")
+  if(ORT_USE_AARCH64_WHEEL)
+    file(COPY "${onnxruntime_binary_SOURCE_DIR}/include" DESTINATION "${ONNXRUNTIME_ROOT_DIR}")
+    file(GLOB _ort_wheel_libs "${onnxruntime_wheel_SOURCE_DIR}/onnxruntime/capi/libonnxruntime*.so*")
+    file(COPY ${_ort_wheel_libs} DESTINATION "${ONNXRUNTIME_ROOT_DIR}/lib")
+    # The wheel only ships the versioned name; consumers link against libonnxruntime.so.
+    file(CREATE_LINK "libonnxruntime.so.${ORT_VERSION}"
+      "${ONNXRUNTIME_ROOT_DIR}/lib/libonnxruntime.so" SYMBOLIC)
+  else()
+    file(COPY "${onnxruntime_binary_SOURCE_DIR}/" DESTINATION "${ONNXRUNTIME_ROOT_DIR}")
+  endif()
 endif()
 
 install(DIRECTORY "${ONNXRUNTIME_ROOT_DIR}/include/"
